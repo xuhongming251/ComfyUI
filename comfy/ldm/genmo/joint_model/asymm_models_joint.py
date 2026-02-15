@@ -13,7 +13,6 @@ from comfy.ldm.modules.attention import optimized_attention
 from .layers import (
     FeedForward,
     PatchEmbed,
-    RMSNorm,
     TimestepEmbedder,
 )
 
@@ -90,10 +89,10 @@ class AsymmetricAttention(nn.Module):
 
         # Query and key normalization for stability.
         assert qk_norm
-        self.q_norm_x = RMSNorm(self.head_dim, device=device, dtype=dtype)
-        self.k_norm_x = RMSNorm(self.head_dim, device=device, dtype=dtype)
-        self.q_norm_y = RMSNorm(self.head_dim, device=device, dtype=dtype)
-        self.k_norm_y = RMSNorm(self.head_dim, device=device, dtype=dtype)
+        self.q_norm_x = operations.RMSNorm(self.head_dim, eps=1e-5, device=device, dtype=dtype)
+        self.k_norm_x = operations.RMSNorm(self.head_dim, eps=1e-5, device=device, dtype=dtype)
+        self.q_norm_y = operations.RMSNorm(self.head_dim, eps=1e-5, device=device, dtype=dtype)
+        self.k_norm_y = operations.RMSNorm(self.head_dim, eps=1e-5, device=device, dtype=dtype)
 
         # Output layers. y features go back down from dim_x -> dim_y.
         self.proj_x = operations.Linear(dim_x, dim_x, bias=out_bias, device=device, dtype=dtype)
@@ -110,6 +109,7 @@ class AsymmetricAttention(nn.Module):
         scale_x: torch.Tensor,  # (B, dim_x), modulation for pre-RMSNorm.
         scale_y: torch.Tensor,  # (B, dim_y), modulation for pre-RMSNorm.
         crop_y,
+        transformer_options={},
         **rope_rotation,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         rope_cos = rope_rotation.get("rope_cos")
@@ -144,7 +144,7 @@ class AsymmetricAttention(nn.Module):
 
         xy = optimized_attention(q,
                                  k,
-                                 v, self.num_heads, skip_reshape=True)
+                                 v, self.num_heads, skip_reshape=True, transformer_options=transformer_options)
 
         x, y = torch.tensor_split(xy, (q_x.shape[1],), dim=1)
         x = self.proj_x(x)
@@ -225,6 +225,7 @@ class AsymmetricJointBlock(nn.Module):
         x: torch.Tensor,
         c: torch.Tensor,
         y: torch.Tensor,
+        transformer_options={},
         **attn_kwargs,
     ):
         """Forward pass of a block.
@@ -257,6 +258,7 @@ class AsymmetricJointBlock(nn.Module):
             y,
             scale_x=scale_msa_x,
             scale_y=scale_msa_y,
+            transformer_options=transformer_options,
             **attn_kwargs,
         )
 
@@ -461,8 +463,6 @@ class AsymmDiTJoint(nn.Module):
         pH, pW = H // self.patch_size, W // self.patch_size
         x = self.embed_x(x)  # (B, N, D), where N = T * H * W / patch_size ** 2
         assert x.ndim == 3
-        B = x.size(0)
-
 
         pH, pW = H // self.patch_size, W // self.patch_size
         N = T * pH * pW
@@ -494,8 +494,9 @@ class AsymmDiTJoint(nn.Module):
         packed_indices: Dict[str, torch.Tensor] = None,
         rope_cos: torch.Tensor = None,
         rope_sin: torch.Tensor = None,
-        control=None, **kwargs
+        control=None, transformer_options={}, **kwargs
     ):
+        patches_replace = transformer_options.get("patches_replace", {})
         y_feat = context
         y_mask = attention_mask
         sigma = timestep
@@ -515,15 +516,34 @@ class AsymmDiTJoint(nn.Module):
         )
         del y_mask
 
+        blocks_replace = patches_replace.get("dit", {})
         for i, block in enumerate(self.blocks):
-            x, y_feat = block(
-                x,
-                c,
-                y_feat,
-                rope_cos=rope_cos,
-                rope_sin=rope_sin,
-                crop_y=num_tokens,
-            )  # (B, M, D), (B, L, D)
+            if ("double_block", i) in blocks_replace:
+                def block_wrap(args):
+                    out = {}
+                    out["img"], out["txt"] = block(
+                                                    args["img"],
+                                                    args["vec"],
+                                                    args["txt"],
+                                                    rope_cos=args["rope_cos"],
+                                                    rope_sin=args["rope_sin"],
+                                                    crop_y=args["num_tokens"],
+                                                    transformer_options=args["transformer_options"]
+                                                    )
+                    return out
+                out = blocks_replace[("double_block", i)]({"img": x, "txt": y_feat, "vec": c, "rope_cos": rope_cos, "rope_sin": rope_sin, "num_tokens": num_tokens, "transformer_options": transformer_options}, {"original_block": block_wrap})
+                y_feat = out["txt"]
+                x = out["img"]
+            else:
+                x, y_feat = block(
+                    x,
+                    c,
+                    y_feat,
+                    rope_cos=rope_cos,
+                    rope_sin=rope_sin,
+                    crop_y=num_tokens,
+                    transformer_options=transformer_options,
+                )  # (B, M, D), (B, L, D)
         del y_feat  # Final layers don't use dense text features.
 
         x = self.final_layer(x, c)  # (B, M, patch_size ** 2 * out_channels)
