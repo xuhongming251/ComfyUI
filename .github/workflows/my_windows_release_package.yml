@@ -37,7 +37,7 @@ jobs:
           with:
             fetch-depth: 150
             persist-credentials: false
-        - shell: bash
+        - shell: "C:\\Program Files\\Git\\bin\\bash.exe"
           run: |
             cd ..
             cp -r ComfyUI ComfyUI_copy
