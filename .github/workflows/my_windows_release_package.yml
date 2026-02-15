@@ -32,21 +32,6 @@ jobs:
         pull-requests: "read"
     runs-on: self-hosted
     steps:
-        - uses: actions/cache/restore@v4
-          id: cache
-          with:
-            path: |
-              cu${{ inputs.cu }}_python_deps.tar
-              update_comfyui_and_python_dependencies.bat
-            key: ${{ runner.os }}-build-cu${{ inputs.cu }}-${{ inputs.python_minor }}
-        - shell: bash
-          run: |
-            mv cu${{ inputs.cu }}_python_deps.tar ../
-            mv update_comfyui_and_python_dependencies.bat ../
-            cd ..
-            tar xf cu${{ inputs.cu }}_python_deps.tar
-            pwd
-            ls
 
         - uses: actions/checkout@v4
           with:
