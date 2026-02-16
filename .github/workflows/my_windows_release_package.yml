@@ -58,10 +58,11 @@ jobs:
             python -m pip wheel --no-cache-dir torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu${{ inputs.cu }} -r requirements_nocomfyui.txt pygit2 -w ..\cu${{ inputs.cu }}_python_deps
 
             :: Original packaging logic
-            xcopy /E /I /Y . ..\ComfyUI_copy
+            :: Use /H to include hidden files like .git which are needed for the update script
+            xcopy /E /I /Y /H . ..\ComfyUI_copy
             cd ..
             curl -L https://www.python.org/ftp/python/3.${{ inputs.python_minor }}.${{ inputs.python_patch }}/python-3.${{ inputs.python_minor }}.${{ inputs.python_patch }}-embed-amd64.zip -o python_embeded.zip
-            mkdir python_embeded
+            if not exist python_embeded mkdir python_embeded
             tar -xf python_embeded.zip -C python_embeded
             cd python_embeded
             echo import site >> python3${{ inputs.python_minor }}._pth
@@ -79,15 +80,18 @@ jobs:
             if not exist taesd (
                 git clone --depth 1 https://github.com/comfyanonymous/taesd
             )
-            xcopy /Y taesd\*.safetensors ComfyUI_copy\models\vae_approx\
+            if not exist ComfyUI_copy\models\vae_approx mkdir ComfyUI_copy\models\vae_approx
+            copy /Y taesd\*.safetensors ComfyUI_copy\models\vae_approx\
 
-            mkdir ComfyUI_windows_portable
-            move python_embeded ComfyUI_windows_portable\
-            move ComfyUI_copy ComfyUI_windows_portable\ComfyUI
+            if not exist ComfyUI_windows_portable mkdir ComfyUI_windows_portable
+            move /y python_embeded ComfyUI_windows_portable\
+            :: move directory is tricky in CMD if target exists, use xcopy and rd
+            xcopy /E /I /Y /H ComfyUI_copy ComfyUI_windows_portable\ComfyUI\
+            rd /S /Q ComfyUI_copy
 
             cd ComfyUI_windows_portable
 
-            mkdir update
+            if not exist update mkdir update
             xcopy /E /I /Y ComfyUI\.ci\update_windows\* update\
             xcopy /E /I /Y ComfyUI\.ci\windows_nvidia_base_files\* .\
             copy /Y ..\update_comfyui_and_python_dependencies.bat update\
@@ -98,20 +102,11 @@ jobs:
             move /y ComfyUI_windows_portable.7z ComfyUI\new_ComfyUI_windows_portable_nvidia_cu${{ inputs.cu }}_or_cpu.7z
 
             cd ComfyUI_windows_portable
-            python_embeded\python.exe -s ComfyUI\main.py --quick-test-for-ci --cpu
-            python_embeded\python.exe -s update\update.py ComfyUI\
+            .\python_embeded\python.exe -s ComfyUI\main.py --quick-test-for-ci --cpu
+            .\python_embeded\python.exe -s update\update.py ComfyUI\
 
             dir
-
-
-
-            cd ComfyUI_windows_portable
-            python_embeded/python.exe -s ComfyUI/main.py --quick-test-for-ci --cpu
-
-            python_embeded/python.exe -s ./update/update.py ComfyUI/
-
-            ls
-
+        
         # - name: Upload binaries to release
         #   if: false # Skip upload in local run
         #   uses: svenstaro/upload-release-action@v2
